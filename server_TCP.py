@@ -1,135 +1,183 @@
 import socket
+import threading
 import datetime
 import xml.etree.ElementTree as ET
 import os
+import csv
 
-def log_message(mittente, ip, contenuto, filename="log_server.xml"):
-    """Funzione per loggare messaggi in formato XML"""
-    
-    # Se il file non esiste o è vuoto → inizializza XML
-    if not os.path.exists(filename) or os.path.getsize(filename) == 0:
-        root = ET.Element("logs")
-        tree = ET.ElementTree(root)
-        tree.write(filename, encoding="utf-8", xml_declaration=True)
+HOST = "0.0.0.0"
+PORT = 12345
 
-    # Ora il file ESISTE ed è valido → parse OK
-    tree = ET.parse(filename)
-    root = tree.getroot()
+clients = {}
+lock = threading.Lock()
 
-    message = ET.SubElement(root, "message")
+LOG_FILE = "log_server.xml"
 
-    ET.SubElement(message, "timestamp").text = \
-        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    ET.SubElement(message, "sender").text = mittente
-    ET.SubElement(message, "ip").text = ip
-    ET.SubElement(message, "contenuto").text = contenuto
-
-    ET.indent(tree, space="    ", level=0)
-    tree.write(filename, encoding="utf-8", xml_declaration=True)
-
-def generate_html_log():
-    """Genera un file HTML con i log colorati del SERVER"""
-    log_file = "log_server.xml"
-    html_file = "log_server.html"
-    
-    if not os.path.exists(log_file):
-        return
-    
-    tree = ET.parse(log_file)
-    root = tree.getroot()
-    
-    html_content = """<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <title>Server Log</title>
-    <style>
-        body { font-family: 'Courier New', monospace; background-color: #1e1e1e; color: #d4d4d4; padding: 20px; }
-        .log-entry { margin: 15px 0; padding: 10px; border-left: 4px solid; }
-        .log-entry.client { border-color: #4FC3F7; background-color: #2d3d4d; }
-        .log-entry.server { border-color: #81C784; background-color: #2d3d2d; }
-        .field { margin: 5px 0; }
-        .label { font-weight: bold; color: #FFB74D; }
-        .timestamp { color: #CE93D8; }
-        .sender { color: #4FC3F7; }
-        .ip { color: #FFB74D; }
-        .contenuto { color: #d4d4d4; }
-        h1 { color: #81C784; }
-    </style>
-</head>
-<body>
-    <h1>🖥️ Server Log</h1>
+HELP_TEXT = """
+================= AURACHAT COMMANDS =================
+TIME                     -> Server current time
+NAME                     -> Server name
+EXIT                     -> Disconnect client
+LOG                      -> Receive server logs
+INFO                     -> Show INFO types
+INFO 1                   -> Number of connected clients
+INFO 2                   -> Number of users in DB
+INFO 3                   -> Server network info
+INFO 4                   -> Client network info
+INFO 5                   -> Users available for chat
+USERSLIST                -> List all connected users
+CHAT [USER_ID]           -> Open chat with user
+EX xml [n] [ALL|CLIENT|SERVER]
+EX csv [n] [ALL|CLIENT|SERVER]
+EX txt [n] [ALL|CLIENT|SERVER]
+HELP                     -> Show this menu
+=====================================================
 """
-    
-    for message in root.findall("message"):  # ← QUESTO ERA IL PROBLEMA: cercava "log_entry" invece di "message"
-        sender = message.find("sender").text
-        status_class = "client" if sender == "CLIENT" else "server"
-        
-        html_content += f'    <div class="log-entry {status_class}">\n'
-        html_content += f'        <div class="field"><span class="label">TIMESTAMP:</span> <span class="timestamp">{message.find("timestamp").text}</span></div>\n'
-        html_content += f'        <div class="field"><span class="label">SENDER:</span> <span class="sender">{sender}</span></div>\n'
-        html_content += f'        <div class="field"><span class="label">IP:</span> <span class="ip">{message.find("ip").text}</span></div>\n'
-        html_content += f'        <div class="field"><span class="label">CONTENUTO:</span> <span class="contenuto">{message.find("contenuto").text}</span></div>\n'
-        html_content += '    </div>\n'
-    
-    html_content += """</body>
-</html>"""
-    
-    with open(html_file, "w", encoding="utf-8") as f:
-        f.write(html_content)
 
-# Creazione del socket TCP (IPv4 + TCP)
+
+# ---------- LOGGING ----------
+def log_message(sender, ip, content):
+    if not os.path.exists(LOG_FILE) or os.path.getsize(LOG_FILE) == 0:
+        root = ET.Element("logs")
+        ET.ElementTree(root).write(LOG_FILE, encoding="utf-8", xml_declaration=True)
+
+    tree = ET.parse(LOG_FILE)
+    root = tree.getroot()
+
+    msg = ET.SubElement(root, "message")
+    ET.SubElement(msg, "timestamp").text = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ET.SubElement(msg, "sender").text = sender
+    ET.SubElement(msg, "ip").text = ip
+    ET.SubElement(msg, "contenuto").text = content
+
+    ET.indent(tree)
+    tree.write(LOG_FILE, encoding="utf-8", xml_declaration=True)
+
+
+# ---------- EXPORT ----------
+def export_logs(fmt, number=None, who="ALL"):
+    tree = ET.parse(LOG_FILE)
+    messages = tree.getroot().findall("message")
+
+    if who != "ALL":
+        messages = [m for m in messages if m.find("sender").text == who]
+
+    if number:
+        messages = messages[-number:]
+
+    if fmt == "xml":
+        ET.ElementTree(tree.getroot()).write("export_server.xml", encoding="utf-8")
+        return "export_server.xml created"
+
+    if fmt == "txt":
+        with open("export_server.txt", "w") as f:
+            for m in messages:
+                f.write(m.find("contenuto").text + "\n")
+        return "export_server.txt created"
+
+    if fmt == "csv":
+        with open("export_server.csv", "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["timestamp", "sender", "ip", "contenuto"])
+            for m in messages:
+                writer.writerow([
+                    m.find("timestamp").text,
+                    m.find("sender").text,
+                    m.find("ip").text,
+                    m.find("contenuto").text
+                ])
+        return "export_server.csv created"
+
+
+# ---------- CLIENT HANDLER ----------
+def handle_client(sock, addr, uid):
+    log_message("SERVER", addr[0], f"{uid} connected")
+
+    while True:
+        try:
+            data = sock.recv(4096).decode()
+            if not data:
+                break
+
+            log_message("CLIENT", addr[0], data)
+            parts = data.split()
+            cmd = parts[0].upper()
+
+            if cmd == "EXIT":
+                sock.send("-1".encode())
+                break
+
+            elif cmd == "TIME":
+                reply = datetime.datetime.now().strftime("%H:%M:%S")
+
+            elif cmd == "NAME":
+                reply = socket.gethostname()
+
+            elif cmd == "HELP":
+                reply = HELP_TEXT
+
+            elif cmd == "LOG":
+                reply = open(LOG_FILE).read()
+
+            elif cmd == "INFO":
+                if len(parts) == 1:
+                    reply = "INFO types: 1-5"
+                elif parts[1] == "1":
+                    reply = f"Connected clients: {len(clients)}"
+                elif parts[1] == "2":
+                    reply = "Users in DB: simulated"
+                elif parts[1] == "3":
+                    reply = socket.gethostbyname(socket.gethostname())
+                elif parts[1] == "4":
+                    reply = addr[0]
+                elif parts[1] == "5":
+                    reply = ", ".join(clients.keys())
+                else:
+                    reply = "Invalid INFO type"
+
+            elif cmd == "USERSLIST":
+                reply = "Users: " + ", ".join(clients.keys())
+
+            elif cmd == "CHAT" and len(parts) > 1:
+                reply = "Chat system ready (basic)"
+
+            elif cmd == "EX":
+                fmt = parts[1]
+                num = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else None
+                who = parts[3] if len(parts) > 3 else "ALL"
+                reply = export_logs(fmt, num, who)
+
+            else:
+                reply = f"Unknown command. Type HELP."
+
+            sock.send(reply.encode())
+            log_message("SERVER", addr[0], reply)
+
+        except:
+            break
+
+    with lock:
+        if uid in clients:
+            del clients[uid]
+
+    sock.close()
+    log_message("SERVER", addr[0], f"{uid} disconnected")
+
+
+# ---------- SERVER ----------
 SERVER = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+SERVER.bind((HOST, PORT))
+SERVER.listen(5)
 
-# Bind su IP e porta (0.0.0.0 = accetta da tutte le interfacce)
-SERVER.bind(("0.0.0.0", 12345))
+print("AuraChat Server running...")
 
-# Mettere il server in ascolto
-SERVER.listen(5) # Numero di connessioni ammesse
-print("Server in ascolto sulla porta 12345...")
-
-# Attesa di una connessione da parte del client
-client_socket, client_address = SERVER.accept()
-print(f"Connessione da {client_address}")
-
-# Permette l'invio di più messaggi
+user_id = 1
 while True:
-    # Ricezione messaggio dal client
-    data = client_socket.recv(1024).decode()
-    print(f"Messaggio ricevuto: {data}")
+    client_socket, client_address = SERVER.accept()
+    uid = f"USER{user_id}"
+    user_id += 1
 
-    # Log del messaggio RICEVUTO dal client (mittente=CLIENT)
-    log_message(mittente="CLIENT", ip=client_address[0], contenuto=data)
-    generate_html_log()
-    
-    # Comandi (TIME, NAME, CIAO, EXIT)
-    if data.upper() == "EXIT":
-        risposta = "-1"
-        client_socket.send(risposta.encode())
-        log_message(mittente="SERVER", ip=client_address[0], contenuto=risposta)
-        generate_html_log()
+    with lock:
+        clients[uid] = client_socket
 
-        break
-    elif data.upper() == "TIME":
-        time = datetime.datetime.now()
-        risposta = f"{time.hour}.{time.minute}"
-        client_socket.send(risposta.encode())
-        log_message(mittente="SERVER", ip=client_address[0], contenuto=risposta)
-        generate_html_log()
-
-    elif data.upper() == "NAME":
-        risposta = f"Sono il server: {socket.gethostname()}"
-        client_socket.send(risposta.encode())
-        log_message(mittente="SERVER", ip=client_address[0], contenuto=risposta)
-        generate_html_log()
-
-    else: 
-        risposta = f"Ciao {client_address[0]}, ho ricevuto il tuo messaggio!"
-        client_socket.send(risposta.encode())
-        log_message(mittente="SERVER", ip=client_address[0], contenuto=risposta)
-        generate_html_log()
-   
-# Chiusura connessione con il client
-client_socket.close()
-print(f"Chiusura del server effettuata correttamente!")
+    threading.Thread(target=handle_client, args=(client_socket, client_address, uid)).start()
