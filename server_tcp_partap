@@ -1,0 +1,47 @@
+import socket, datetime, xml.etree.ElementTree as ET, os, time
+
+LOG_FILE = "log_client.xml"
+DISCOVERY_PORT = 50000
+SERVER_PORT = 12345
+
+def log_message(sender, ip, content):
+    if not os.path.exists(LOG_FILE) or os.path.getsize(LOG_FILE) == 0:
+        root = ET.Element("logs")
+        ET.ElementTree(root).write(LOG_FILE, encoding="utf-8", xml_declaration=True)
+    tree = ET.parse(LOG_FILE)
+    root = tree.getroot()
+    msg = ET.SubElement(root, "message")
+    ET.SubElement(msg, "timestamp").text = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ET.SubElement(msg, "sender").text = sender
+    ET.SubElement(msg, "ip").text = ip
+    ET.SubElement(msg, "contenuto").text = content
+    ET.indent(tree)
+    tree.write(LOG_FILE, encoding="utf-8", xml_declaration=True)
+
+def discover_server():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    sock.bind(("", DISCOVERY_PORT))
+    print("Searching server...")
+    while True:
+        data, addr = sock.recvfrom(1024)
+        if data == b"AURASERVER":
+            print("Found server at", addr[0])
+            return addr[0]
+
+SERVER_IP = discover_server()
+CLIENT = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+CLIENT.connect((SERVER_IP, SERVER_PORT))
+print("Connected to AuraChat Server")
+
+while True:
+    cmd = input("[CLIENT] > ")
+    CLIENT.send(cmd.encode())
+    log_message("CLIENT", SERVER_IP, cmd)
+    response = CLIENT.recv(8192).decode()
+    if response == "-1":
+        print("Disconnected from server")
+        break
+    print("\n[SERVER RESPONSE]\n", response, "\n")
+    log_message("SERVER", SERVER_IP, response)
+CLIENT.close()
