@@ -1,7 +1,7 @@
 import socket, datetime, xml.etree.ElementTree as ET, os, time
 
 LOG_FILE = "log_client.xml"
-DISCOVERY_PORT n = 50000
+DISCOVERY_PORT n = 37020
 SERVER_PORT = 12345
 
 def log_message(sender, ip, content):
